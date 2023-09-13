@@ -7,3 +7,4 @@ The project is currently in its infancy
  - add a user interface
  - create the correct startup environment
  - program the EEPROM logic
+ - split program into modules
