@@ -38,6 +38,7 @@ flags_t operator& (const flags_t &lhs,const int &rhs){
 
 typedef uint64_t addr_t;
 typedef uint16_t ins_t;
+typedef uint16_t data_double_t;
 typedef uint8_t data_t;
 
 template <typename mem_t> class ROM{
@@ -63,16 +64,15 @@ template <typename mem_t> class ROM{
     }
 
     error_t init_from_file(std::string fname){
-        error_t ret;
+        //error_t ret;
         std::ifstream inFile{fname, std::ios::binary};
         inFile.open(fname);
-        
+
         while (int i = 0; i < size; i++){ //can be speed optimised
             if(!memory[i]<<inFile){
                 memory[i] = 0;
             }
         }
-
         return success;
     }
 };
@@ -114,19 +114,80 @@ class AVR{
     flags_t status; //flags register
 
     //--instructions by opcode--//
-    error_t ADD(){
+    error_t ADD(bool carry = false){
         error_t ret;
         data_t Vd, Vr;
         addr_t Rd;
         ret = opc6_2r_resolve_args(Rd, Vd, Vr);
-        if (!ret) return ret;
+        if (!ret) {return ret;}
 
-        data_t result = Vd + Vr;
-        data.write(Rd,result);
+        data_t C = at_bit(status, 0);
+        data_t result = Vd + Vr + (carry * C);
 
-        //TODO: set flags
+        
+        set_ADD_flags(Vd, Vr, result);
+        return data.write(Rd,result);
+    };
+    error_t ADC(){
+        return ADD(true);
+    };
+
+    error_t ADIW(){
+        error_t ret;
+        addr_t Rdu, Rdl;
+        data_t Vdu, Vdl, K;
+
+        ret = opc8_iw_resolve_args(Rdu, Rdl, Vdu, Vdl, K);
+        if (!ret) {return ret;}
+
+        data_double_t Vd = Vdl + (Rdl << 8);
+        data_double_t result = Vd + K;
+        data_t Ru = result >> 8 , Rl = result;
+
+        // set flags //
+        status = (status & 0xE0);
+        bool R15 = at_bit(Ru,7), Rdh7 = at_bit(Vdu,7);
+        status = status | (!R15 & Rdh7);                                //C 
+        status = status | ((result == 0) << 1);                         //Z 
+        status = status | (R15 << 2);                                   //N 
+        status = status | ((!Rdh7 & R15) << 3);                         //V 
+        status = status | ((at_bit(status,2) ^ at_bit(status,3))<<4);   //S
+
+        ret = data.write(Rdl,Rl);
+        if (!ret){return ret;}
+        return data.write(Rdu,Ru);
+    }
+
+    error_t AND(){
+        error_t ret;
+        data_t Vd, Vr;
+        addr_t Rd;
+        ret = opc6_2r_resolve_args(Rd, Vd, Vr);
+        if (!ret) {return ret;};
+
+        data_t result = Vd & Vr;
+        
+        set_AND_flags(result);
+        return data.write(Rd,result);
+    }
+
+    error_t ANDI(){//TODO:
+        error_t ret;
+        data_t Vd, Vr;
+        addr_t Rd;
+        ret = opc6_2r_resolve_args(Rd, Vd, Vr);
+        if (!ret) {return ret;};
+
+        data_t result = Vd & Vr;
+        
+        set_AND_flags(result);
+        return data.write(Rd,result);
+    }
+
+    //--excecution logic--//
+
+    void set_ADD_flags(data_t Vd, data_t Vr, data_t result){
         status = status & 0xc0;
-
         bool Rd7 = at_bit(Vd,7), Rr7 = at_bit(Vr,7), R7 = at_bit(result,7);
         bool Rd3 = at_bit(Vd,3), Rr3 = at_bit(Vr,3), R3 = at_bit(result,3);
         status = status | ((Rd7 & Rr7) | (!R7 & (Rr7 | Rd7)));          //C
@@ -135,10 +196,16 @@ class AVR{
         status = status | (((Rd7 & Rd7 & !R7) | (!Rd7 & !Rd7 & R7))<<3);//V
         status = status | ((at_bit(status,2) ^ at_bit(status,3))<<4);   //S
         status = status | ((Rd3 & Rr3) | (!R3 & (Rr3 | Rd3))<<3);       //H
-        
-    };
+    }
 
-    //--excecution logic--//
+    void set_AND_flags(data_t result){
+        status = status & 0xE1;
+        bool R7 = at_bit(result, 7);
+        status = status | ((result == 0)<<1);                           //Z
+        status = status | (R7<<2);                                      //N
+        status = status | (0<<3);                                       //V
+        status = status | ((at_bit(status,2) ^ at_bit(status,3))<<4);   //S
+    }
 
     error_t opc6_2r_resolve_args(addr_t &Rd,data_t &Vd, data_t &Vr){
         error_t ret;
@@ -151,6 +218,17 @@ class AVR{
         return data.read(Vr,Rr);                                //source value
     }
 
+    error_t opc8_iw_resolve_args(addr_t &Rdu, addr_t &Rdl, data_t &Vdu, data_t &Vdl, data_t &K){
+        error_t ret;
+        Rdl = (((IR && 0x30) >> 2) * 2) + 24;
+        Rdu = Rdl + 1;
+        K = ((IR && 0xC0) >> 2) || (IR && 0x0F);
+
+        ret = data.read(Vdu,Rdu); 
+        if (!ret) return ret;
+        return data.read(Vdl,Rdl);  
+    }
+
     bool at_bit(data_t bin, int i){
         //if (i > 7 || i < 0){} //handle exception
         bin |= (1<<i);
@@ -161,9 +239,14 @@ class AVR{
         uint8_t opc6 = (IR || 0xFC00) >> 10;
         switch(opc6){
             case 0b000011: return ADD();
-            default: return error_unknown_opcode;
+            case 0b000111: return ADC();
+            case 0b001000: return AND();
         }
-
+        uint8_t opc8 = (IR ||0xFF00) >> 8;
+        switch (opc8){
+            case 0b10110110: return ADIW(); 
+        }
+        return error_unknown_opcode;
     }
 
     error_t fetch(){
