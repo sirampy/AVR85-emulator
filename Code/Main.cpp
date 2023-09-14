@@ -68,11 +68,14 @@ template <typename mem_t> class ROM{
         std::ifstream inFile{fname, std::ios::binary};
         inFile.open(fname);
 
-        while (int i = 0; i < size; i++){ //can be speed optimised
+        /*
+        for(int i = 0; i < size; i++){ //can be speed optimised
             if(!memory[i]<<inFile){
                 memory[i] = 0;
             }
         }
+        */
+        inFile.close();
         return success;
     }
 };
@@ -237,13 +240,14 @@ class AVR{
 
     error_t excecute(){
         uint8_t opc6 = (IR || 0xFC00) >> 10;
-        switch(opc6){
-            case 0b000011: return ADD();
-            case 0b000111: return ADC();
+        switch(opc6){ //TODO: use X ... Y to not need multiple switch statements
             case 0b001000: return AND();
         }
         uint8_t opc8 = (IR ||0xFF00) >> 8;
         switch (opc8){
+            case 0b00001100 ... 0b00001111: return ADD();
+            case 0b00011100 ... 0b00011111: return ADC();
+
             case 0b10110110: return ADIW(); 
         }
         return error_unknown_opcode;
