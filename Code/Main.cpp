@@ -68,13 +68,12 @@ template <typename mem_t> class ROM{
         std::ifstream inFile{fname, std::ios::binary};
         inFile.open(fname);
 
-        /*
         for(int i = 0; i < size; i++){ //can be speed optimised
-            if(!memory[i]<<inFile){
+            if(!inFile>>memory[i]){
                 memory[i] = 0;
             }
         }
-        */
+
         inFile.close();
         return success;
     }
@@ -161,6 +160,41 @@ class AVR{
         return data.write(Rdu,Ru);
     }
 
+    error_t SUB(bool carry = false){//TODO:
+        error_t ret;
+        data_t Vd, Vr;
+        addr_t Rd;
+        ret = opc6_2r_resolve_args(Rd, Vd, Vr);
+        if (!ret) {return ret;}
+
+        data_t C = at_bit(status, 0);
+        data_t result = Vd - Vr - (carry * C);
+
+        
+        set_SUB_flags(Vd, Vr, result, carry & at_bit(status,1));
+        return data.write(Rd,result);
+    }
+    error_t SBC(){
+        return SUB(true);
+    }
+
+    error_t SUBI(bool carry = false){
+        error_t ret;
+        data_t Vd, K;
+        addr_t Rd;
+        ret = opc4_ri_resolve_args(Rd, Vd, K);
+        if (!ret) {return ret;}
+
+        data_t C = at_bit(status, 0);
+        data_t result = Vd - K - (carry * C);
+
+        set_SUB_flags(Vd, K, result, carry & at_bit(status,1));
+        return data.write(Rd,result);
+    }
+    error_t SBCI(){
+        return SUBI(true);
+    }
+
     error_t AND(){
         error_t ret;
         data_t Vd, Vr;
@@ -174,14 +208,14 @@ class AVR{
         return data.write(Rd,result);
     }
 
-    error_t ANDI(){//TODO:
+    error_t ANDI(){
         error_t ret;
-        data_t Vd, Vr;
+        data_t Vd, K;
         addr_t Rd;
-        ret = opc6_2r_resolve_args(Rd, Vd, Vr);
+        ret = opc6_2r_resolve_args(Rd, Vd, K);
         if (!ret) {return ret;};
 
-        data_t result = Vd & Vr;
+        data_t result = Vd & K;
         
         set_AND_flags(result);
         return data.write(Rd,result);
@@ -193,12 +227,23 @@ class AVR{
         status = status & 0xc0;
         bool Rd7 = at_bit(Vd,7), Rr7 = at_bit(Vr,7), R7 = at_bit(result,7);
         bool Rd3 = at_bit(Vd,3), Rr3 = at_bit(Vr,3), R3 = at_bit(result,3);
-        status = status | ((Rd7 & Rr7) | (!R7 & (Rr7 | Rd7)));          //C
+        status = status | (( (!Rd7) & Rr7) | (!R7 & (Rr7 | Rd7)));      //C
         status = status | ((result == 0)<<1);                           //Z
         status = status | (((result & 0x80) == 0)<<2);                  //N
-        status = status | (((Rd7 & Rd7 & !R7) | (!Rd7 & !Rd7 & R7))<<3);//V
+        status = status | (((Rd7 & Rr7 & !R7) | (!Rd7 & (!Rr7) & R7))<<3);//V
         status = status | ((at_bit(status,2) ^ at_bit(status,3))<<4);   //S
-        status = status | ((Rd3 & Rr3) | (!R3 & (Rr3 | Rd3))<<3);       //H
+        status = status | ((Rd3 & Rr3) | (!R3 & (Rr3 | Rd3))<<5);       //H
+    }
+    void set_SUB_flags(data_t Vd, data_t Vr, data_t result, bool Z = false){
+        status = status & 0xc0;
+        bool Rd7 = at_bit(Vd,7), Rr7 = at_bit(Vr,7), R7 = at_bit(result,7);
+        bool Rd3 = at_bit(Vd,3), Rr3 = at_bit(Vr,3), R3 = at_bit(result,3);
+        status = status | ((Rr7 & R7) | ((!Rd7) & (Rr7 | R7)));         //C
+        status = status | (((result == 0) & Z)<<1);                           //Z
+        status = status | (R7 <<2 );                                    //N
+        status = status | (((Rd7 & !Rr7 & !R7) | (!Rd7 & Rr7 & R7))<<3);//V
+        status = status | ((at_bit(status,2) ^ at_bit(status,3))<<4);   //S
+        status = status | ((Rr3 & R3) | (!Rd3 & (Rr3 | R3))<<5);        //H
     }
 
     void set_AND_flags(data_t result){
@@ -210,22 +255,28 @@ class AVR{
         status = status | ((at_bit(status,2) ^ at_bit(status,3))<<4);   //S
     }
 
-    error_t opc6_2r_resolve_args(addr_t &Rd,data_t &Vd, data_t &Vr){
+    error_t opc4_ri_resolve_args(addr_t &Rd,data_t &Vd, data_t &K){
+        Rd = (IR >> 8) & 0x000f;
+        K = ((IR & 0x0f00) >> 4) + IR & 0x000f;
+        return data.read(Vd, Rd);
+    }
+
+    error_t opc6_2r_resolve_args(addr_t &Rd,data_t &Vd, data_t &Vr){    //2r = 2 registers
         error_t ret;
 
-        Rd = (IR && 0x01f0) >> 4;                               //destination register
-        addr_t Rr = ((IR && 0x0200) + (IR && 0x000f) >> 5);     //source register
+        Rd = (IR & 0x01f0) >> 4;                                //destination register
+        addr_t Rr = ((IR & 0x0200) >> 5) + (IR & 0x000f);       //source register
 
         ret = data.read(Vd,Rd);                                 //destination value
         if (!ret) return ret;
         return data.read(Vr,Rr);                                //source value
     }
 
-    error_t opc8_iw_resolve_args(addr_t &Rdu, addr_t &Rdl, data_t &Vdu, data_t &Vdl, data_t &K){
+    error_t opc8_iw_resolve_args(addr_t &Rdu, addr_t &Rdl, data_t &Vdu, data_t &Vdl, data_t &K){ //iw = immediate to word
         error_t ret;
-        Rdl = (((IR && 0x30) >> 2) * 2) + 24;
+        Rdl = (((IR & 0x30) >> 2) * 2) + 24;
         Rdu = Rdl + 1;
-        K = ((IR && 0xC0) >> 2) || (IR && 0x0F);
+        K = ((IR & 0xC0) >> 2) | (IR & 0x0F);
 
         ret = data.read(Vdu,Rdu); 
         if (!ret) return ret;
@@ -239,16 +290,19 @@ class AVR{
     }
 
     error_t excecute(){
-        uint8_t opc6 = (IR || 0xFC00) >> 10;
-        switch(opc6){ //TODO: use X ... Y to not need multiple switch statements
-            case 0b001000: return AND();
-        }
         uint8_t opc8 = (IR ||0xFF00) >> 8;
         switch (opc8){
             case 0b00001100 ... 0b00001111: return ADD();
             case 0b00011100 ... 0b00011111: return ADC();
-
             case 0b10110110: return ADIW(); 
+
+            case 0b00011000 ... 0b00011011: return SUB();
+            case 0b00001000 ... 0b00001011: return SBC();
+            case 0b01010000 ... 0b01011111: return SUBI();
+            case 0b01000000 ... 0b01001111: return SBCI();
+
+            case 0b00100000 ... 0b00100011: return AND();
+            case 0b01110000 ... 0b01111111: return ANDI();
         }
         return error_unknown_opcode;
     }
