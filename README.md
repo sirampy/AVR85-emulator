@@ -8,3 +8,4 @@ for testing I reccomend using AVRA
  - add a user interface
  - create the correct startup environment
  - program the EEPROM logic
+ - split program into modules
